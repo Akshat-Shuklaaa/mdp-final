@@ -55,16 +55,28 @@ const FaceRegistration = ({ onRegistrationComplete, onClose }) => {
 
     try {
       setStatus('capturing');
-      setMessage('Capturing and validating...');
+      setMessage('Capturing...');
 
       let imageSrc = null;
 
       if (cameraSource === 'ip' && cameraUrl) {
-        // IP Camera: capture from <img> via hidden canvas
+        // IP Camera: force a fresh snapshot by cache-busting the URL,
+        // then wait for the <img> onload before drawing to canvas.
         const img = imgRef.current;
-        if (!img || !img.naturalWidth) {
-          throw new Error('IP camera stream not loaded');
-        }
+        if (!img) throw new Error('IP camera element not found');
+
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(
+            () => reject(new Error('IP camera timeout — no frame in 5s')),
+            5000
+          );
+          img.onload = () => { clearTimeout(timer); resolve(); };
+          img.onerror = () => { clearTimeout(timer); reject(new Error('IP camera frame failed to load')); };
+          // Append timestamp to bust browser cache and get a live frame
+          const sep = cameraUrl.includes('?') ? '&' : '?';
+          img.src = `${cameraUrl}${sep}_t=${Date.now()}`;
+        });
+
         const hCanvas = hiddenCanvasRef.current;
         hCanvas.width = img.naturalWidth || 640;
         hCanvas.height = img.naturalHeight || 480;
@@ -73,42 +85,20 @@ const FaceRegistration = ({ onRegistrationComplete, onClose }) => {
         imageSrc = hCanvas.toDataURL('image/jpeg', 0.8);
       } else {
         // Browser webcam
-        if (!webcamRef.current) {
-          throw new Error('Webcam not available');
-        }
+        if (!webcamRef.current) throw new Error('Webcam not available');
         imageSrc = webcamRef.current.getScreenshot();
       }
 
-      if (!imageSrc) {
-        throw new Error('Failed to capture image');
-      }
+      if (!imageSrc) throw new Error('Failed to capture image');
 
-      const blob = dataURLtoBlob(imageSrc);
-      const detections = await api.detectFaces(blob);
-
-      if (detections.length === 0) {
-        setMessage('No face detected. Please try again with better lighting and face the camera directly.');
-        setStatus('error');
-        setTimeout(() => { setStatus('idle'); setMessage(''); }, 3000);
-        return;
-      }
-
-      if (detections.length > 1) {
-        setMessage('Multiple faces detected. Please ensure only one person is in frame.');
-        setStatus('error');
-        setTimeout(() => { setStatus('idle'); setMessage(''); }, 3000);
-        return;
-      }
-
+      // Save the image directly — the /register endpoint validates the face internally,
+      // so we skip the redundant detectFaces() round-trip here.
       setCapturedImages(prev => [...prev, { src: imageSrc }]);
-
       setMessage(`Captured ${capturedImages.length + 1}/3 images successfully!`);
       setStatus('idle');
 
       setTimeout(() => {
-        if (capturedImages.length + 1 < 3) {
-          setMessage('');
-        }
+        if (capturedImages.length + 1 < 3) setMessage('');
       }, 2000);
 
     } catch (error) {
